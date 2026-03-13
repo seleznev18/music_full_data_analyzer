@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     input_dir: Path = Path("music_for_preprocessing")
     manifest_file: str = "manifest.csv"
-    output_file: str = "results.csv"
+    output_file: str = "results.json"
 
     model_config = {"env_file": ".env"}
 

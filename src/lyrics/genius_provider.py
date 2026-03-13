@@ -95,4 +95,22 @@ class GeniusLyricsProvider:
 
         lyrics = "\n".join(parts).strip()
         lyrics = re.sub(r"\n{3,}", "\n\n", lyrics)
+        lyrics = self._clean_lyrics(lyrics)
         return lyrics
+
+    @staticmethod
+    def _clean_lyrics(lyrics: str) -> str:
+        """Strip Genius page artifacts (contributors, translations, song description)."""
+        # Find the first section marker like [Verse 1], [Intro], [Chorus], etc.
+        marker = re.search(
+            r'\[(Verse|Chorus|Intro|Pre-Chorus|Bridge|Outro|Hook|Interlude|Refrain|Part|Skit)',
+            lyrics,
+        )
+        if marker:
+            lyrics = lyrics[marker.start():]
+
+        # Remove trailing "You might also likeN Embed" type artifacts
+        lyrics = re.sub(r'You might also like.*$', '', lyrics, flags=re.DOTALL)
+        lyrics = re.sub(r'\d*\s*Embed\s*$', '', lyrics)
+
+        return lyrics.strip()

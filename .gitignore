@@ -19,7 +19,7 @@ music_for_preprocessing/*.m4a
 music_for_preprocessing/*.aac
 
 # Output
-results.csv
+results.json
 
 # IDE
 .idea/

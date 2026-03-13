@@ -6,7 +6,7 @@ Reads a CSV manifest from music_for_preprocessing/, and for each song:
   2. Fetches lyrics from Genius
   3. Generates a caption via Gemini API
 
-Results are written to a CSV output file.
+Results are written to a JSON output file.
 
 Usage:
     python main.py
@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=settings.output_file,
-        help="Output CSV file path",
+        help="Output JSON file path",
     )
     parser.add_argument(
         "--skip-lyrics",
@@ -209,16 +210,9 @@ def main() -> None:
 
     # --- Write output ---
     output_path = Path(args.output)
-    fieldnames = [
-        "file_name", "song_name", "artist",
-        "bpm", "key", "time_signature",
-        "lyrics", "caption", "errors",
-    ]
 
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
     print(f"\nDone! Results written to {output_path}")
     successful = sum(1 for r in results if not r["errors"])
