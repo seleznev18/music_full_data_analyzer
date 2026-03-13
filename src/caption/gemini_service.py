@@ -1,12 +1,14 @@
 """
-Caption generation via Google Gemini API.
+Caption generation via Gemini API (kie.ai proxy).
 
-Sends an audio file and a text prompt to Gemini, returns the generated text.
+Sends an audio file (base64-encoded) and a text prompt to the kie.ai
+Gemini chat-completions endpoint, returns the generated text.
 """
 
+import base64
 from pathlib import Path
 
-from google import genai
+import httpx
 
 CAPTION_PROMPT = """\
 Analyze this music track and write a detailed production description that captures \
@@ -37,21 +39,24 @@ chorus. Melancholic, introspective atmosphere with an early-2020s singer-songwri
 Write only the description paragraph, nothing else.\
 """
 
+KIE_BASE_URL = "https://api.kie.ai"
+
 
 class GeminiCaptionService:
-    """Generates text captions for audio files using Gemini."""
+    """Generates text captions for audio files using Gemini via kie.ai."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str, model_name: str = "gemini-3-flash") -> None:
         if not api_key:
             raise RuntimeError(
                 "Gemini API key not configured. Set GEMINI_API_KEY in .env"
             )
-        self._client = genai.Client(api_key=api_key)
+        self._api_key = api_key
         self._model_name = model_name
 
     def generate_caption(self, audio_path: Path) -> str:
         """
-        Upload an audio file to Gemini and generate a text caption.
+        Encode an audio file as base64, send it to the kie.ai Gemini
+        chat-completions endpoint, and return the generated caption.
 
         Parameters
         ----------
@@ -75,13 +80,34 @@ class GeminiCaptionService:
         }
         mime_type = mime_map.get(audio_path.suffix.lower(), "application/octet-stream")
 
-        audio_file = self._client.files.upload(
-            file=open(str(audio_path), "rb"),
-            config={"mime_type": mime_type},
-        )
+        audio_bytes = audio_path.read_bytes()
+        b64_data = base64.b64encode(audio_bytes).decode("utf-8")
+        data_uri = f"data:{mime_type};base64,{b64_data}"
 
-        response = self._client.models.generate_content(
-            model=self._model_name,
-            contents=[CAPTION_PROMPT, audio_file],
-        )
-        return response.text
+        url = f"{KIE_BASE_URL}/{self._model_name}/v1/chat/completions"
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": CAPTION_PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }
+            ],
+            "stream": False,
+            "include_thoughts": False,
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
+        with httpx.Client(timeout=300.0) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
