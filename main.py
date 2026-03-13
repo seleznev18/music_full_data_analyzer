@@ -63,12 +63,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip caption generation via Gemini",
     )
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        default=settings.gemini_prompt,
-        help="Prompt to send to Gemini alongside the audio",
-    )
     return parser.parse_args()
 
 
@@ -197,7 +191,7 @@ def main() -> None:
         if caption_service and audio_path.exists():
             print(f"  Generating caption...", end=" ", flush=True)
             try:
-                caption = caption_service.generate_caption(audio_path, args.prompt)
+                caption = caption_service.generate_caption(audio_path)
                 row["caption"] = caption
                 preview = caption[:80].replace("\n", " ")
                 print(f"OK \"{preview}...\"")
