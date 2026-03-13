@@ -86,15 +86,15 @@ class TimeSignatureAnalyzer(IAudioAnalyzer):
 
         # 2) Compute frame-level onset detection function
         w = es.Windowing(type="hann")
-        spectrum = es.Spectrum()
+        fft = es.FFT(size=self.FRAME_SIZE)
+        c2p = es.CartesianToPolar()
         onset = es.OnsetDetection(method="complex")
 
         onset_curve = []
         for frame in es.FrameGenerator(audio, frameSize=self.FRAME_SIZE, hopSize=self.HOP_SIZE):
-            spec = spectrum(w(frame))
-            # OnsetDetection also needs the phase spectrum
-            phase = es.CartesianToPolar()(spec)[1]
-            onset_curve.append(onset(spec, phase))
+            fft_result = fft(w(frame))
+            mag, phase = c2p(fft_result)
+            onset_curve.append(onset(mag, phase))
 
         if len(onset_curve) < int(beat_period_frames * 8):
             return {"time_signature": "4/4"}
