@@ -65,7 +65,20 @@ class GeminiCaptionService:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        audio_file = self._client.files.upload(file=open(str(audio_path), "rb"))
+        mime_map = {
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".flac": "audio/flac",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/mp4",
+            ".aac": "audio/aac",
+        }
+        mime_type = mime_map.get(audio_path.suffix.lower(), "application/octet-stream")
+
+        audio_file = self._client.files.upload(
+            file=open(str(audio_path), "rb"),
+            config={"mime_type": mime_type},
+        )
 
         response = self._client.models.generate_content(
             model=self._model_name,
