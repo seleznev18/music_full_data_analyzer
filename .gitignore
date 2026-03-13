@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Environment
+.env
+
+# Audio files (only keep manifest)
+music_for_preprocessing/*.mp3
+music_for_preprocessing/*.wav
+music_for_preprocessing/*.flac
+music_for_preprocessing/*.ogg
+music_for_preprocessing/*.m4a
+music_for_preprocessing/*.aac
+
+# Output
+results.csv
+
+# IDE
+.idea/
+.vscode/
+*.swp
