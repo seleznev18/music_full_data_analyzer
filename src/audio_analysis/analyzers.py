@@ -60,41 +60,60 @@ class BpmAnalyzer(IAudioAnalyzer):
 
 class TimeSignatureAnalyzer(IAudioAnalyzer):
     """
-    Estimates the time signature by analysing beat-level accent patterns.
+    Estimates the time signature via onset detection + autocorrelation.
 
-    Uses RhythmExtractor2013 for beat positions and BeatsLoudness
-    to detect periodic accent patterns (3/4 vs 4/4).
+    Computes a frame-level onset strength curve (complex spectral difference),
+    then autocorrelates it. Peaks at specific lag ratios reveal whether the
+    accent pattern repeats every 3 or 4 beats, without relying on beat tracking.
 
     Returns {"time_signature": "4/4"} or similar.
     """
 
+    FRAME_SIZE = 2048
+    HOP_SIZE = 512
+
     def analyze(self, audio: np.ndarray) -> dict[str, object]:
         import essentia.standard as es
+        from src.audio_analysis.constants import SAMPLE_RATE
 
-        rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
-        bpm, beats, beats_confidence, _, beats_intervals = rhythm_extractor(audio)
-
-        if len(beats) < 8:
+        # 1) Get BPM to know the expected beat period in frames
+        bpm = float(es.PercivalBpmEstimator()(audio))
+        if bpm <= 0:
             return {"time_signature": "4/4"}
 
-        loudness, _ = es.BeatsLoudness(beats=beats.tolist())(audio)
+        beat_period_sec = 60.0 / bpm
+        beat_period_frames = beat_period_sec / (self.HOP_SIZE / SAMPLE_RATE)
 
-        if len(loudness) < 8:
+        # 2) Compute frame-level onset detection function
+        w = es.Windowing(type="hann")
+        spectrum = es.Spectrum()
+        onset = es.OnsetDetection(method="complex")
+
+        onset_curve = []
+        for frame in es.FrameGenerator(audio, frameSize=self.FRAME_SIZE, hopSize=self.HOP_SIZE):
+            spec = spectrum(w(frame))
+            # OnsetDetection also needs the phase spectrum
+            phase = es.CartesianToPolar()(spec)[1]
+            onset_curve.append(onset(spec, phase))
+
+        if len(onset_curve) < int(beat_period_frames * 8):
             return {"time_signature": "4/4"}
 
-        # Test common meters: 3 (waltz) and 4 (standard)
+        onset_signal = np.array(onset_curve, dtype=np.float32)
+
+        # 3) Autocorrelation of the onset strength curve
+        autocorr = es.AutoCorrelation()(onset_signal)
+
+        # 4) Compare autocorrelation strength at meter-level lags
+        #    For 3/4 time: strong peak at lag = 3 * beat_period
+        #    For 4/4 time: strong peak at lag = 4 * beat_period
         scores: dict[int, float] = {}
         for meter in [3, 4]:
-            accent_hits = 0
-            groups = 0
-            for i in range(0, len(loudness) - meter + 1, meter):
-                group = loudness[i : i + meter]
-                if len(group) == meter:
-                    # First beat of each group should be loudest (downbeat)
-                    if group[0] >= max(group):
-                        accent_hits += 1
-                    groups += 1
-            scores[meter] = accent_hits / groups if groups > 0 else 0.0
+            lag = int(round(beat_period_frames * meter))
+            if lag < len(autocorr):
+                scores[meter] = float(autocorr[lag])
+            else:
+                scores[meter] = 0.0
 
         best_meter = max(scores, key=scores.get)
         meter_map = {3: "3/4", 4: "4/4"}
