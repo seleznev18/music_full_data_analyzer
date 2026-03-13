@@ -7,6 +7,9 @@ Gemini chat-completions endpoint, returns the generated text.
 
 import base64
 import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -71,20 +74,33 @@ class GeminiCaptionService:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        mime_map = {
-            ".mp3": "audio/mpeg",
-            ".wav": "audio/wav",
-            ".flac": "audio/flac",
-            ".ogg": "audio/ogg",
-            ".m4a": "audio/mp4",
-            ".aac": "audio/aac",
-        }
-        mime_type = mime_map.get(audio_path.suffix.lower(), "application/octet-stream")
+        # kie.ai only accepts mp3 — convert other formats to a temp mp3
+        tmp_mp3: Path | None = None
+        try:
+            if audio_path.suffix.lower() != ".mp3":
+                fd, tmp_name = tempfile.mkstemp(suffix=".mp3", prefix="caption_")
+                os.close(fd)
+                tmp_mp3 = Path(tmp_name)
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(audio_path), "-q:a", "2", str(tmp_mp3)],
+                    check=True,
+                    capture_output=True,
+                )
+                send_path = tmp_mp3
+            else:
+                send_path = audio_path
 
-        audio_bytes = audio_path.read_bytes()
-        b64_data = base64.b64encode(audio_bytes).decode("utf-8")
-        data_uri = f"data:{mime_type};base64,{b64_data}"
+            audio_bytes = send_path.read_bytes()
+            b64_data = base64.b64encode(audio_bytes).decode("utf-8")
+            data_uri = f"data:audio/mpeg;base64,{b64_data}"
 
+            return self._call_api(data_uri)
+        finally:
+            if tmp_mp3 and tmp_mp3.exists():
+                tmp_mp3.unlink()
+
+    def _call_api(self, data_uri: str) -> str:
+        """Send the base64 audio data URI to the kie.ai streaming endpoint."""
         url = f"{KIE_BASE_URL}/{self._model_name}/v1/chat/completions"
 
         payload = {
