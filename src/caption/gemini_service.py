@@ -6,6 +6,7 @@ Gemini chat-completions endpoint, returns the generated text.
 """
 
 import base64
+import json
 from pathlib import Path
 
 import httpx
@@ -96,7 +97,7 @@ class GeminiCaptionService:
                     ],
                 }
             ],
-            "stream": False,
+            "stream": True,
             "include_thoughts": False,
         }
 
@@ -105,9 +106,27 @@ class GeminiCaptionService:
             "Authorization": f"Bearer {self._api_key}",
         }
 
-        with httpx.Client(timeout=300.0) as client:
-            response = client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
+        content_parts: list[str] = []
 
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        with httpx.Client(timeout=300.0) as client:
+            with client.stream("POST", url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        break
+                    chunk = json.loads(data_str)
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    text = delta.get("content", "")
+                    if text:
+                        content_parts.append(text)
+
+        if not content_parts:
+            raise RuntimeError("Gemini API returned no content")
+
+        return "".join(content_parts)
