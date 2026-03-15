@@ -61,7 +61,7 @@ def main():
 
     results = []
     for i, row in enumerate(rows, 1):
-        file_name = row["file_name"]
+        file_name = row["filename"]
         song_name = row["song_name"]
         artist = row["artist"]
         audio_path = MUSIC_DIR / file_name
