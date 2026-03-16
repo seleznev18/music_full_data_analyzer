@@ -25,6 +25,7 @@ from src.audio_analysis.analyzers import (
 from src.audio_analysis.constants import ALLOWED_AUDIO_EXTENSIONS
 from src.audio_analysis.service import AudioAnalysisService, AudioLoader
 from src.caption.gemini_service import GeminiCaptionService
+from src.export.cleaners import clean_caption
 from src.lyrics.genius_provider import GeniusLyricsProvider
 
 app = FastAPI(title="Music Full Data Analyzer")
@@ -125,7 +126,7 @@ def analyze_song(
         caption_service = get_caption_service()
         if caption_service:
             try:
-                caption = caption_service.generate_caption(audio_path)
+                caption = clean_caption(caption_service.generate_caption(audio_path))
             except Exception as exc:
                 caption = f"[caption unavailable: {exc}]"
 

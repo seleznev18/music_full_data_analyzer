@@ -40,7 +40,14 @@ guitar, understated upright bass, and gentle brush-played drums. The production 
 warm analog saturation, close-mic room ambience, and a gradual string swell in the final \
 chorus. Melancholic, introspective atmosphere with an early-2020s singer-songwriter feel."
 
-Write only the description paragraph, nothing else.\
+Write only the description paragraph, nothing else.
+
+IMPORTANT: Output ONLY the music description as a single paragraph or two. \
+Do not add any follow-up questions, offers to help, or conversational text. \
+Do not write things like "Is there anything else I can help you with?", \
+"Let me know if you need anything else", "Here's the description:", "Sure!", \
+"Of course!", "Certainly!" etc. Start directly with the description and end \
+immediately after it. No preamble, no sign-off.\
 """
 
 KIE_BASE_URL = "https://api.kie.ai"

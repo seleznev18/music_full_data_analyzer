@@ -17,9 +17,11 @@ music_for_preprocessing/*.flac
 music_for_preprocessing/*.ogg
 music_for_preprocessing/*.m4a
 music_for_preprocessing/*.aac
+music_for_preprocessing/manifest.csv
 
 # Output
 results.json
+output/
 
 # IDE
 .idea/
