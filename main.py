@@ -76,6 +76,7 @@ def analyze_song(
     file: UploadFile = File(...),
     song_name: str = Form(...),
     artist: str = Form(...),
+    has_vocals: bool = Form(True),
 ):
     """
     Analyze a single audio file: extract BPM/key/time signature,
@@ -110,13 +111,14 @@ def analyze_song(
 
         # 2) Lyrics
         lyrics = ""
-        lyrics_provider = get_lyrics_provider()
-        if lyrics_provider:
-            try:
-                result = lyrics_provider.fetch_lyrics(song_name, artist)
-                lyrics = result.lyrics
-            except Exception as exc:
-                lyrics = f"[lyrics unavailable: {exc}]"
+        if has_vocals:
+            lyrics_provider = get_lyrics_provider()
+            if lyrics_provider:
+                try:
+                    result = lyrics_provider.fetch_lyrics(song_name, artist)
+                    lyrics = result.lyrics
+                except Exception as exc:
+                    lyrics = f"[lyrics unavailable: {exc}]"
 
         # 3) Caption
         caption = ""
