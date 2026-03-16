@@ -108,6 +108,8 @@ class GeniusLyricsProvider:
         )
         if marker:
             lyrics = lyrics[marker.start():]
+        else:
+            return ""
 
         # Remove trailing "You might also likeN Embed" type artifacts
         lyrics = re.sub(r'You might also like.*$', '', lyrics, flags=re.DOTALL)
