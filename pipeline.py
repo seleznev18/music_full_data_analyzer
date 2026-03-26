@@ -402,8 +402,16 @@ async def generate_caption(
                     # ── Read full response body, then parse ──
                     body = await resp.text()
 
-                    # kie.ai returns 429 inside a 200 body
-                    if '"code":429' in body or '"code": 429' in body:
+                    # kie.ai wraps errors as HTTP 200 with {"code":NNN} body
+                    soft_code = None
+                    try:
+                        _err = json.loads(body)
+                        if isinstance(_err, dict) and "code" in _err and _err.get("code") != 200:
+                            soft_code = _err["code"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                    if soft_code == 429:
                         retries_429 += 1
                         if retries_429 > 10:
                             error_logger.error("Caption skip (soft-429 exhausted after %d retries): %s", retries_429, audio_path)
@@ -411,6 +419,19 @@ async def generate_caption(
                         wait = min(5 * (2 ** (retries_429 - 1)), 120)
                         await asyncio.sleep(wait)
                         continue
+
+                    if soft_code in (500, 502, 503):
+                        retries_server += 1
+                        if retries_server > 5:
+                            error_logger.error("Caption skip (soft-%d exhausted after %d retries): %s", soft_code, retries_server, audio_path)
+                            return ""
+                        await asyncio.sleep(3)
+                        continue
+
+                    if soft_code is not None:
+                        # Any other error code (400, 401, etc.) — not retryable
+                        error_logger.error("Caption skip (soft-%d): %s — %s", soft_code, audio_path, body[:500])
+                        return ""
 
                     content_parts: list[str] = []
 
