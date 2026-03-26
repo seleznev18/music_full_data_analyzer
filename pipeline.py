@@ -312,7 +312,10 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
             return None
 
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-i", audio_path, "-q:a", "2", "-f", "mp3", "pipe:1",
+        "ffmpeg", "-i", audio_path,
+        "-map", "0:a:0",          # audio stream only, drop album art
+        "-map_metadata", "-1",    # strip all metadata/ID3 tags
+        "-q:a", "2", "-f", "mp3", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
