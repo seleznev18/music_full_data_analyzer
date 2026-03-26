@@ -401,6 +401,17 @@ async def generate_caption(
 
                     # ── Read full response body, then parse ──
                     body = await resp.text()
+
+                    # kie.ai returns 429 inside a 200 body
+                    if '"code":429' in body or '"code": 429' in body:
+                        retries_429 += 1
+                        if retries_429 > 10:
+                            error_logger.error("Caption skip (soft-429 exhausted after %d retries): %s", retries_429, audio_path)
+                            return ""
+                        wait = min(5 * (2 ** (retries_429 - 1)), 120)
+                        await asyncio.sleep(wait)
+                        continue
+
                     content_parts: list[str] = []
 
                     # Try SSE parsing first (lines starting with "data:")
