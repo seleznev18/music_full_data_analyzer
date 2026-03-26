@@ -307,7 +307,8 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
         try:
             with open(audio_path, "rb") as f:
                 return f.read()
-        except Exception:
+        except Exception as exc:
+            error_logger.error("MP3 read failed: %s — %s", audio_path, exc)
             return None
 
     proc = await asyncio.create_subprocess_exec(
@@ -315,8 +316,13 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, _ = await proc.communicate()
+    stdout, stderr_bytes = await proc.communicate()
     if proc.returncode != 0:
+        error_logger.error(
+            "ffmpeg failed (rc=%d): %s — %s",
+            proc.returncode, audio_path,
+            stderr_bytes.decode("utf-8", errors="replace")[:500],
+        )
         return None
     return stdout
 
@@ -332,6 +338,7 @@ async def generate_caption(
     # Convert to MP3 once (outside retry loop)
     mp3_bytes = await _to_mp3_bytes(audio_path)
     if not mp3_bytes:
+        error_logger.error("Caption skip (mp3 conversion failed): %s", audio_path)
         return ""
 
     b64_data = base64.b64encode(mp3_bytes).decode("utf-8")
@@ -373,6 +380,7 @@ async def generate_caption(
                     if resp.status == 429:
                         retries_429 += 1
                         if retries_429 > 10:
+                            error_logger.error("Caption skip (429 exhausted after %d retries): %s", retries_429, audio_path)
                             return ""
                         wait = min(5 * (2 ** (retries_429 - 1)), 120)
                         await asyncio.sleep(wait)
@@ -381,11 +389,15 @@ async def generate_caption(
                     if resp.status in (500, 502, 503):
                         retries_server += 1
                         if retries_server > 5:
+                            error_logger.error("Caption skip (server %d exhausted after %d retries): %s", resp.status, retries_server, audio_path)
                             return ""
                         await asyncio.sleep(3)
                         continue
 
-                    resp.raise_for_status()
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        error_logger.error("Caption skip (HTTP %d): %s — %s", resp.status, audio_path, body[:500])
+                        return ""
 
                     # ── Parse SSE stream (same logic as existing code) ──
                     content_parts: list[str] = []
@@ -412,21 +424,30 @@ async def generate_caption(
                             content_parts.append(text)
 
                     if not content_parts:
+                        error_logger.error("Caption skip (empty SSE response, status was %d): %s", resp.status, audio_path)
                         return ""
 
-                    return clean_caption("".join(content_parts))
+                    raw_caption = "".join(content_parts)
+                    cleaned = clean_caption(raw_caption)
+                    if not cleaned:
+                        error_logger.error("Caption skip (clean_caption stripped everything): %s — raw was: %.200s", audio_path, raw_caption)
+                    return cleaned
 
         except asyncio.TimeoutError:
             retries_server += 1
             if retries_server > 5:
+                error_logger.error("Caption skip (timeout exhausted after %d retries): %s", retries_server, audio_path)
                 return ""
             await asyncio.sleep(3)
             continue
-        except aiohttp.ClientResponseError:
+        except aiohttp.ClientResponseError as exc:
+            error_logger.error("Caption skip (HTTP error %s): %s", exc, audio_path)
             return ""
         except Exception:
+            error_logger.error("Caption skip (unexpected error): %s\n%s", audio_path, traceback.format_exc())
             return ""
 
+    error_logger.error("Caption skip (all 10 attempts exhausted): %s", audio_path)
     return ""
 
 
