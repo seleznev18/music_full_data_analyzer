@@ -386,12 +386,14 @@ async def generate_caption(
                         await asyncio.sleep(wait)
                         continue
 
-                    if resp.status in (500, 502, 503):
+                    if resp.status >= 500:
+                        # All 5xx (including 524 Cloudflare timeout) are retryable
                         retries_server += 1
-                        if retries_server > 5:
+                        if retries_server > 8:
                             error_logger.error("Caption skip (server %d exhausted after %d retries): %s", resp.status, retries_server, audio_path)
                             return ""
-                        await asyncio.sleep(3)
+                        wait = min(3 * (2 ** (retries_server - 1)), 60)
+                        await asyncio.sleep(wait)
                         continue
 
                     if resp.status >= 400:
