@@ -442,23 +442,25 @@ async def download_from_s3(
     endpoint: str,
 ) -> str | None:
     """Download a file from S3 using the AWS CLI.
-    Returns local file path on success, None after 3 failed attempts."""
+    Returns local file path on success, or the error string on failure."""
     local_path = os.path.join(temp_dir, filename)
     s3_uri = f"s3://{bucket}/{prefix}/{filename}"
 
+    last_stderr = ""
     for attempt in range(3):
         proc = await asyncio.create_subprocess_exec(
             "aws", "s3", "--endpoint-url", endpoint, "cp", s3_uri, local_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        _, stderr_bytes = await proc.communicate()
         if proc.returncode == 0:
             return local_path
+        last_stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
         if attempt < 2:
             await asyncio.sleep(2)
 
-    return None
+    return last_stderr  # return error message instead of None on failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -553,14 +555,15 @@ async def stage1_worker(
         filename = row["filename"]
 
         try:
-            local_path = await download_from_s3(
+            result = await download_from_s3(
                 filename, args.temp_dir,
                 args.s3_bucket, args.s3_prefix, args.s3_endpoint,
             )
-            if local_path is None:
+            local_path = os.path.join(args.temp_dir, filename)
+            if not os.path.exists(local_path):
                 error_logger.error(
-                    "S3 download failed after 3 retries: file_id=%s filename=%s",
-                    file_id, filename,
+                    "S3 download failed after 3 retries: file_id=%s filename=%s — %s",
+                    file_id, filename, result,
                 )
                 counters.failed += 1
                 continue
