@@ -399,13 +399,13 @@ async def generate_caption(
                         error_logger.error("Caption skip (HTTP %d): %s — %s", resp.status, audio_path, body[:500])
                         return ""
 
-                    # ── Parse SSE stream (same logic as existing code) ──
+                    # ── Read full response body, then parse ──
+                    body = await resp.text()
                     content_parts: list[str] = []
-                    while True:
-                        raw_line = await resp.content.readline()
-                        if not raw_line:
-                            break
-                        line = raw_line.decode("utf-8").strip()
+
+                    # Try SSE parsing first (lines starting with "data:")
+                    for line in body.splitlines():
+                        line = line.strip()
                         if not line.startswith("data:"):
                             continue
                         data_str = line[len("data:"):].strip()
@@ -423,8 +423,21 @@ async def generate_caption(
                         if text:
                             content_parts.append(text)
 
+                    # Fallback: try parsing body as regular JSON response
                     if not content_parts:
-                        error_logger.error("Caption skip (empty SSE response, status was %d): %s", resp.status, audio_path)
+                        try:
+                            full_resp = json.loads(body)
+                            choices = full_resp.get("choices", [])
+                            if choices:
+                                msg = choices[0].get("message", {})
+                                text = msg.get("content", "")
+                                if text:
+                                    content_parts.append(text)
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            pass
+
+                    if not content_parts:
+                        error_logger.error("Caption skip (empty response, status %d): %s — body: %.500s", resp.status, audio_path, body)
                         return ""
 
                     raw_caption = "".join(content_parts)
