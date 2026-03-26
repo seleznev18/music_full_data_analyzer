@@ -48,12 +48,6 @@ class AnalysisResult(BaseModel):
 # --- Service singletons ---
 
 
-def get_audio_service() -> AudioAnalysisService:
-    loader = AudioLoader()
-    analyzers = [KeyAnalyzer(), BpmAnalyzer(), TimeSignatureAnalyzer()]
-    return AudioAnalysisService(loader, analyzers)
-
-
 def get_lyrics_provider() -> GeniusLyricsProvider | None:
     if not settings.genius_api_token:
         return None
@@ -78,10 +72,16 @@ def analyze_song(
     song_name: str = Form(...),
     artist: str = Form(...),
     has_vocals: bool = Form(True),
+    key: str = Form(""),
+    bpm: str = Form(""),
+    time_signature: str = Form(""),
 ):
     """
     Analyze a single audio file: extract BPM/key/time signature,
     fetch lyrics from Genius, generate a caption via Gemini.
+
+    If key, bpm, or time_signature are provided (non-empty), those values
+    are used directly and the corresponding audio analyzers are skipped.
     """
     # Validate extension
     ext = Path(file.filename or "").suffix.lower()
@@ -100,15 +100,35 @@ def analyze_song(
 
         audio_path = Path(tmp_path)
 
-        # 1) Audio analysis
-        audio_service = get_audio_service()
-        features = audio_service.analyze_file(audio_path)
+        # 1) Audio analysis — only run analyzers for features not already provided
+        features: dict[str, object] = {}
+        if key:
+            features["key"] = key
+        if bpm:
+            features["bpm"] = float(bpm)
+        if time_signature:
+            features["time_signature"] = time_signature
 
-        if "error" in features:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Audio analysis failed: {features['error']}",
-            )
+        missing_analyzers = []
+        if not key:
+            missing_analyzers.append(KeyAnalyzer())
+        if not bpm:
+            missing_analyzers.append(BpmAnalyzer())
+        if not time_signature:
+            missing_analyzers.append(TimeSignatureAnalyzer())
+
+        if missing_analyzers:
+            loader = AudioLoader()
+            service = AudioAnalysisService(loader, missing_analyzers)
+            extracted = service.analyze_file(audio_path)
+
+            if "error" in extracted:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Audio analysis failed: {extracted['error']}",
+                )
+
+            features.update(extracted)
 
         # 2) Lyrics
         lyrics = ""

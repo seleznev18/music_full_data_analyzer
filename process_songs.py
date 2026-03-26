@@ -25,13 +25,30 @@ MUSIC_DIR = Path("music_for_preprocessing")
 API_ENDPOINT = "/api/v1/analyze"
 
 
-def analyze_song(base_url: str, audio_path: Path, song_name: str, artist: str, has_vocals: bool) -> dict:
+def analyze_song(
+    base_url: str,
+    audio_path: Path,
+    song_name: str,
+    artist: str,
+    has_vocals: bool,
+    key: str = "",
+    bpm: str = "",
+    time_signature: str = "",
+) -> dict:
     url = base_url.rstrip("/") + API_ENDPOINT
+    data = {
+        "song_name": song_name,
+        "artist": artist,
+        "has_vocals": str(has_vocals).lower(),
+        "key": key,
+        "bpm": bpm,
+        "time_signature": time_signature,
+    }
     with open(audio_path, "rb") as f:
         response = requests.post(
             url,
             files={"file": (audio_path.name, f)},
-            data={"song_name": song_name, "artist": artist, "has_vocals": str(has_vocals).lower()},
+            data=data,
             timeout=600,  # caption generation can take up to 5 min per song
         )
     response.raise_for_status()
@@ -65,6 +82,9 @@ def main():
         song_name = row["song_name"]
         artist = row["artist"]
         has_vocals = row.get("has_vocals", "true").strip().lower() != "false"
+        key = row.get("key", "").strip()
+        bpm = row.get("bpm", "").strip()
+        time_signature = row.get("time_signature", "").strip()
         audio_path = MUSIC_DIR / file_name
 
         print(f"[{i}/{len(rows)}] {song_name} — {artist} ...", end=" ", flush=True)
@@ -75,7 +95,10 @@ def main():
             continue
 
         try:
-            result = analyze_song(args.host, audio_path, song_name, artist, has_vocals)
+            result = analyze_song(
+                args.host, audio_path, song_name, artist, has_vocals,
+                key=key, bpm=bpm, time_signature=time_signature,
+            )
             print("OK")
             results.append(result)
         except requests.HTTPError as exc:
