@@ -285,7 +285,7 @@ async def fetch_lyrics(
     """Fetch lyrics with Genius rate-limit retry.  Returns lyrics or empty string."""
     backoff_base = 2
     max_backoff = 20
-    max_retries = 3
+    max_retries = 5
 
     for attempt in range(max_retries):
         try:
