@@ -281,8 +281,10 @@ async def _genius_search(
     return None
 
 
-async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
-    """Scrape lyrics from a Genius song page.  Returns cleaned lyrics."""
+async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> tuple[str, str]:
+    """Scrape lyrics from a Genius song page.
+    Returns (lyrics_text, status) where status is 'OK', 'NO_CONTAINER', or 'CLEAN_EMPTY'.
+    For CLEAN_EMPTY, lyrics_text is the raw (uncleaned) text so callers can still use it."""
     async with session.get(
         url,
         timeout=aiohttp.ClientTimeout(total=15),
@@ -298,7 +300,7 @@ async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
 
     if not containers:
         lyrics_logger.debug("NO_CONTAINER  url=%s", url)
-        return ""
+        return "", "NO_CONTAINER"
 
     parts: list[str] = []
     for container in containers:
@@ -306,13 +308,13 @@ async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
             br.replace_with("\n")
         parts.append(container.get_text())
 
-    lyrics = "\n".join(parts).strip()
-    lyrics = re.sub(r"\n{3,}", "\n\n", lyrics)
-    raw_len = len(lyrics)
-    lyrics = _clean_lyrics(lyrics)
-    if not lyrics:
-        lyrics_logger.debug("CLEAN_EMPTY   url=%s  raw_len=%d", url, raw_len)
-    return lyrics
+    raw_lyrics = "\n".join(parts).strip()
+    raw_lyrics = re.sub(r"\n{3,}", "\n\n", raw_lyrics)
+    cleaned = _clean_lyrics(raw_lyrics)
+    if not cleaned:
+        lyrics_logger.debug("CLEAN_EMPTY   url=%s  raw_len=%d", url, len(raw_lyrics))
+        return raw_lyrics, "CLEAN_EMPTY"
+    return cleaned, "OK"
 
 
 async def fetch_lyrics(
@@ -320,8 +322,11 @@ async def fetch_lyrics(
     title: str,
     artist: str,
     semaphore: asyncio.Semaphore,
-) -> str:
-    """Fetch lyrics with Genius rate-limit retry.  Returns lyrics or empty string."""
+) -> tuple[str, bool, bool]:
+    """Fetch lyrics with Genius rate-limit retry.
+    Returns (lyrics, found_on_genius, has_markup).
+      found_on_genius — True when the song URL was resolved on Genius (OK/NO_CONTAINER/CLEAN_EMPTY).
+      has_markup      — True only when lyrics contain proper section markers (OK)."""
     backoff_base = 2
     max_backoff = 20
     max_retries = 5
@@ -332,23 +337,25 @@ async def fetch_lyrics(
                 song_url = await _genius_search(session, title, artist)
                 if song_url is None:
                     lyrics_logger.debug("NOT_FOUND     artist=%r  title=%r", artist, title)
-                    return ""
-                lyrics = await _genius_scrape(session, song_url)
-                if lyrics:
+                    return "", False, False
+                lyrics, status = await _genius_scrape(session, song_url)
+                if status == "OK":
                     lyrics_logger.debug("OK (%d chars)  artist=%r  title=%r  url=%s", len(lyrics), artist, title, song_url)
+                    return lyrics, True, True
                 else:
+                    # NO_CONTAINER or CLEAN_EMPTY — _genius_scrape already logged the specific reason
                     lyrics_logger.debug("EMPTY         artist=%r  title=%r  url=%s", artist, title, song_url)
-                return lyrics
+                    return lyrics, True, False
         except _RateLimited:
             wait = min(backoff_base * (2 ** attempt), max_backoff)
             await asyncio.sleep(wait)
             continue
         except Exception:
             lyrics_logger.debug("EXCEPTION     artist=%r  title=%r  err=%s", artist, title, traceback.format_exc().strip().splitlines()[-1])
-            return ""
+            return "", False, False
 
     lyrics_logger.debug("RATELIMITED   artist=%r  title=%r  (exhausted %d retries)", artist, title, max_retries)
-    return ""
+    return "", False, False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -750,8 +757,10 @@ async def stage2_worker(
 
         try:
             lyrics = ""
+            found_on_genius = False
+            has_markup = False
             if item["has_vocals"]:
-                lyrics = await fetch_lyrics(
+                lyrics, found_on_genius, has_markup = await fetch_lyrics(
                     session, item["song_name"], item["artist"], genius_semaphore,
                 )
             counters.lyrics_done += 1
@@ -767,6 +776,8 @@ async def stage2_worker(
                 "time_signature": item["time_signature"],
                 "has_vocals": item["has_vocals"],
                 "lyrics": lyrics,
+                "found_on_genius": found_on_genius,
+                "has_markup": has_markup,
             })
         except Exception:
             error_logger.error(
@@ -785,6 +796,8 @@ async def stage2_worker(
                 "time_signature": item["time_signature"],
                 "has_vocals": item["has_vocals"],
                 "lyrics": "",
+                "found_on_genius": False,
+                "has_markup": False,
             })
 
 
