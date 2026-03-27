@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import base64
 import csv
+import itertools
 import json
 import logging
 import os
@@ -40,9 +41,17 @@ from tqdm import tqdm
 # ═══════════════════════════════════════════════════════════════════════════
 load_dotenv()
 
-GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash")
+
+# Support multiple Genius keys — comma-separated in GENIUS_API_TOKENS,
+# falls back to single GENIUS_API_TOKEN.  Round-robined across requests.
+_genius_tokens: list[str] = [
+    t.strip()
+    for t in os.getenv("GENIUS_API_TOKENS", os.getenv("GENIUS_API_TOKEN", "")).split(",")
+    if t.strip()
+]
+_genius_token_cycle = itertools.cycle(_genius_tokens) if _genius_tokens else itertools.cycle([""])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Error logger — all errors with tracebacks go to pipeline_errors.log
@@ -214,7 +223,7 @@ async def _genius_search(
 ) -> str | None:
     """Search Genius API for the song page URL.  Returns URL or None."""
     query = f"{title} {artist}"
-    headers = {"Authorization": f"Bearer {GENIUS_API_TOKEN}"}
+    headers = {"Authorization": f"Bearer {next(_genius_token_cycle)}"}
 
     async with session.get(
         f"{GENIUS_BASE_URL}/search",
