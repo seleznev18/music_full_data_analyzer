@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import base64
 import csv
-import itertools
 import json
 import logging
 import os
@@ -45,13 +44,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash")
 
 # Support multiple Genius keys — comma-separated in GENIUS_API_TOKENS,
-# falls back to single GENIUS_API_TOKEN.  Round-robined across requests.
+# falls back to single GENIUS_API_TOKEN.
 _genius_tokens: list[str] = [
     t.strip()
     for t in os.getenv("GENIUS_API_TOKENS", os.getenv("GENIUS_API_TOKEN", "")).split(",")
     if t.strip()
-]
-_genius_token_cycle = itertools.cycle(_genius_tokens) if _genius_tokens else itertools.cycle([""])
+] or [""]
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Error logger — all errors with tracebacks go to pipeline_errors.log
@@ -207,6 +205,39 @@ def _clean_lyrics(lyrics: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Genius key pool — per-key rate limiter
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GeniusKeyPool:
+    """Rotates Genius API tokens with a per-key minimum interval between requests.
+
+    Picks whichever key has been idle the longest. If all keys are still within
+    their cooldown window, sleeps until the earliest one is free.
+
+    Asyncio-safe: no races because the check + update happen with no await in
+    between, so no other coroutine can interleave and steal the same slot.
+    """
+
+    def __init__(self, tokens: list[str], interval: float = 2.0):
+        self._tokens = tokens
+        self._interval = interval
+        self._next_available: list[float] = [0.0] * len(tokens)
+
+    async def next_key(self) -> str:
+        while True:
+            now = time.monotonic()
+            idx = min(range(len(self._tokens)), key=lambda i: self._next_available[i])
+            wait = self._next_available[idx] - now
+            if wait <= 0:
+                self._next_available[idx] = time.monotonic() + self._interval
+                return self._tokens[idx]
+            await asyncio.sleep(wait)
+
+
+_genius_key_pool: GeniusKeyPool | None = None  # initialised in run_pipeline
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Genius lyrics — async port of src/lyrics/genius_provider.py
 #
 # Same URL construction, same headers, same response parsing,
@@ -223,7 +254,7 @@ async def _genius_search(
 ) -> str | None:
     """Search Genius API for the song page URL.  Returns URL or None."""
     query = f"{title} {artist}"
-    headers = {"Authorization": f"Bearer {next(_genius_token_cycle)}"}
+    headers = {"Authorization": f"Bearer {await _genius_key_pool.next_key()}"}
 
     async with session.get(
         f"{GENIUS_BASE_URL}/search",
@@ -952,6 +983,9 @@ async def run_pipeline(args: argparse.Namespace):
     counters = Counters()
     pbar = tqdm(total=remaining, desc="Processing", unit="file")
 
+    global _genius_key_pool
+    _genius_key_pool = GeniusKeyPool(_genius_tokens, interval=args.genius_interval)
+
     N = args.download_workers
     M = args.genius_workers
     K = args.gemini_workers
@@ -1092,6 +1126,10 @@ def main():
     parser.add_argument(
         "--genius-concurrency", type=int, default=5,
         help="Max concurrent HTTP requests to Genius API (default: 5)",
+    )
+    parser.add_argument(
+        "--genius-interval", type=float, default=2.0,
+        help="Seconds between requests per Genius API key (default: 2.0)",
     )
     parser.add_argument(
         "--gemini-workers", type=int, default=10,
