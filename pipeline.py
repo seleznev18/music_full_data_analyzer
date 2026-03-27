@@ -22,6 +22,7 @@ import csv
 import json
 import logging
 import os
+import random
 import re
 import signal
 import sys
@@ -271,9 +272,9 @@ async def fetch_lyrics(
     semaphore: asyncio.Semaphore,
 ) -> str:
     """Fetch lyrics with Genius rate-limit retry.  Returns lyrics or empty string."""
-    backoff_base = 3
-    max_backoff = 60
-    max_retries = 8
+    backoff_base = 2
+    max_backoff = 20
+    max_retries = 3
 
     for attempt in range(max_retries):
         try:
@@ -311,11 +312,17 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
             error_logger.error("MP3 read failed: %s — %s", audio_path, exc)
             return None
 
+    MAX_CAPTION_SECS = 300   # first 5 minutes
+    MAX_MP3_BYTES    = 4_500_000  # ~4.5 MB
+
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-i", audio_path,
+        "-t", str(MAX_CAPTION_SECS),
         "-map", "0:a:0",          # audio stream only, drop album art
         "-map_metadata", "-1",    # strip all metadata/ID3 tags
-        "-q:a", "2", "-f", "mp3", "pipe:1",
+        "-ac", "1",               # mono — halves file size vs stereo
+        "-b:a", "96k",            # CBR 96 kbps — predictable size
+        "-f", "mp3", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -325,6 +332,12 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
             "ffmpeg failed (rc=%d): %s — %s",
             proc.returncode, audio_path,
             stderr_bytes.decode("utf-8", errors="replace")[:500],
+        )
+        return None
+    if len(stdout) > MAX_MP3_BYTES:
+        error_logger.error(
+            "MP3 too large after conversion (%d bytes): %s",
+            len(stdout), audio_path,
         )
         return None
     return stdout
@@ -375,6 +388,7 @@ async def generate_caption(
     retries_server = 0
 
     for attempt in range(10):
+        _retry_wait: float = 0.0  # sleep OUTSIDE semaphore to free the slot
         try:
             async with semaphore:
                 async with session.post(
@@ -385,117 +399,114 @@ async def generate_caption(
                         if retries_429 > 10:
                             error_logger.error("Caption skip (429 exhausted after %d retries): %s", retries_429, audio_path)
                             return ""
-                        wait = min(5 * (2 ** (retries_429 - 1)), 120)
-                        await asyncio.sleep(wait)
-                        continue
+                        _retry_wait = min(5 * (2 ** (retries_429 - 1)), 120) + random.uniform(0, 5)
 
-                    if resp.status >= 500:
-                        # All 5xx (including 524 Cloudflare timeout) are retryable
+                    elif resp.status >= 500:
                         retries_server += 1
                         if retries_server > 8:
                             error_logger.error("Caption skip (server %d exhausted after %d retries): %s", resp.status, retries_server, audio_path)
                             return ""
-                        wait = min(3 * (2 ** (retries_server - 1)), 60)
-                        await asyncio.sleep(wait)
-                        continue
+                        _retry_wait = min(3 * (2 ** (retries_server - 1)), 60) + random.uniform(0, 3)
 
-                    if resp.status >= 400:
+                    elif resp.status >= 400:
                         body = await resp.text()
                         error_logger.error("Caption skip (HTTP %d): %s — %s", resp.status, audio_path, body[:500])
                         return ""
 
-                    # ── Read full response body, then parse ──
-                    body = await resp.text()
+                    else:
+                        # ── Read full response body, then parse ──
+                        body = await resp.text()
 
-                    # kie.ai wraps errors as HTTP 200 with {"code":NNN} body
-                    soft_code = None
-                    try:
-                        _err = json.loads(body)
-                        if isinstance(_err, dict) and "code" in _err and _err.get("code") != 200:
-                            soft_code = _err["code"]
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                    if soft_code == 429:
-                        retries_429 += 1
-                        if retries_429 > 10:
-                            error_logger.error("Caption skip (soft-429 exhausted after %d retries): %s", retries_429, audio_path)
-                            return ""
-                        wait = min(5 * (2 ** (retries_429 - 1)), 120)
-                        await asyncio.sleep(wait)
-                        continue
-
-                    if soft_code in (500, 502, 503):
-                        retries_server += 1
-                        if retries_server > 5:
-                            error_logger.error("Caption skip (soft-%d exhausted after %d retries): %s", soft_code, retries_server, audio_path)
-                            return ""
-                        await asyncio.sleep(3)
-                        continue
-
-                    if soft_code is not None:
-                        # Any other error code (400, 401, etc.) — not retryable
-                        error_logger.error("Caption skip (soft-%d): %s — %s", soft_code, audio_path, body[:500])
-                        return ""
-
-                    content_parts: list[str] = []
-
-                    # Try SSE parsing first (lines starting with "data:")
-                    for line in body.splitlines():
-                        line = line.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if data_str == "[DONE]":
-                            break
+                        # kie.ai wraps errors as HTTP 200 with {"code":NNN} body
+                        soft_code = None
                         try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        text = delta.get("content", "")
-                        if text:
-                            content_parts.append(text)
-
-                    # Fallback: try parsing body as regular JSON response
-                    if not content_parts:
-                        try:
-                            full_resp = json.loads(body)
-                            choices = full_resp.get("choices", [])
-                            if choices:
-                                msg = choices[0].get("message", {})
-                                text = msg.get("content", "")
-                                if text:
-                                    content_parts.append(text)
-                        except (json.JSONDecodeError, KeyError, IndexError):
+                            _err = json.loads(body)
+                            if isinstance(_err, dict) and "code" in _err and _err.get("code") != 200:
+                                soft_code = _err["code"]
+                        except (json.JSONDecodeError, TypeError):
                             pass
 
-                    if not content_parts:
-                        error_logger.error("Caption skip (empty response, status %d): %s — body: %.500s", resp.status, audio_path, body)
-                        return ""
+                        if soft_code == 429:
+                            retries_429 += 1
+                            if retries_429 > 10:
+                                error_logger.error("Caption skip (soft-429 exhausted after %d retries): %s", retries_429, audio_path)
+                                return ""
+                            _retry_wait = min(5 * (2 ** (retries_429 - 1)), 120) + random.uniform(0, 5)
 
-                    raw_caption = "".join(content_parts)
-                    cleaned = clean_caption(raw_caption)
-                    if not cleaned:
-                        error_logger.error("Caption skip (clean_caption stripped everything): %s — raw was: %.200s", audio_path, raw_caption)
-                    return cleaned
+                        elif soft_code in (500, 502, 503):
+                            retries_server += 1
+                            if retries_server > 8:
+                                error_logger.error("Caption skip (soft-%d exhausted after %d retries): %s", soft_code, retries_server, audio_path)
+                                return ""
+                            _retry_wait = min(3 * (2 ** (retries_server - 1)), 60) + random.uniform(0, 3)
+
+                        elif soft_code is not None:
+                            # Any other error code (400, 401, etc.) — not retryable
+                            error_logger.error("Caption skip (soft-%d): %s — %s", soft_code, audio_path, body[:500])
+                            return ""
+
+                        else:
+                            content_parts: list[str] = []
+
+                            # Try SSE parsing first (lines starting with "data:")
+                            for line in body.splitlines():
+                                line = line.strip()
+                                if not line.startswith("data:"):
+                                    continue
+                                data_str = line[len("data:"):].strip()
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(data_str)
+                                except json.JSONDecodeError:
+                                    continue
+                                choices = chunk.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                text = delta.get("content", "")
+                                if text:
+                                    content_parts.append(text)
+
+                            # Fallback: try parsing body as regular JSON response
+                            if not content_parts:
+                                try:
+                                    full_resp = json.loads(body)
+                                    choices = full_resp.get("choices", [])
+                                    if choices:
+                                        msg = choices[0].get("message", {})
+                                        text = msg.get("content", "")
+                                        if text:
+                                            content_parts.append(text)
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    pass
+
+                            if not content_parts:
+                                error_logger.error("Caption skip (empty response, status %d): %s — body: %.500s", resp.status, audio_path, body)
+                                return ""
+
+                            raw_caption = "".join(content_parts)
+                            cleaned = clean_caption(raw_caption)
+                            if not cleaned:
+                                error_logger.error("Caption skip (clean_caption stripped everything): %s — raw was: %.200s", audio_path, raw_caption)
+                            return cleaned
 
         except asyncio.TimeoutError:
             retries_server += 1
             if retries_server > 5:
                 error_logger.error("Caption skip (timeout exhausted after %d retries): %s", retries_server, audio_path)
                 return ""
-            await asyncio.sleep(3)
-            continue
+            _retry_wait = 3.0 + random.uniform(0, 2)
         except aiohttp.ClientResponseError as exc:
             error_logger.error("Caption skip (HTTP error %s): %s", exc, audio_path)
             return ""
         except Exception:
             error_logger.error("Caption skip (unexpected error): %s\n%s", audio_path, traceback.format_exc())
             return ""
+
+        # Sleep AFTER releasing the semaphore so the slot is free for other workers
+        if _retry_wait > 0:
+            await asyncio.sleep(_retry_wait)
 
     error_logger.error("Caption skip (all 10 attempts exhausted): %s", audio_path)
     return ""
