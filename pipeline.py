@@ -247,8 +247,7 @@ async def _genius_search(
         if artist_lower in primary_artist or primary_artist in artist_lower:
             return result["url"]
 
-    # Fallback to first result if no exact artist match
-    return hits[0]["result"]["url"]
+    return None
 
 
 async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
