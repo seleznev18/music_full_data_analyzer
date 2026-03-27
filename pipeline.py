@@ -53,6 +53,13 @@ _err_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(messa
 error_logger.addHandler(_err_handler)
 error_logger.setLevel(logging.ERROR)
 
+# ── Lyrics debug logger — one line per song showing what happened ──
+lyrics_logger = logging.getLogger("lyrics_debug")
+_lyrics_handler = logging.FileHandler("lyrics_debug.log", mode="a", encoding="utf-8")
+_lyrics_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+lyrics_logger.addHandler(_lyrics_handler)
+lyrics_logger.setLevel(logging.DEBUG)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Caption prompt — exact copy from src/caption/gemini_service.py
 # ═══════════════════════════════════════════════════════════════════════════
@@ -251,6 +258,7 @@ async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
     containers = soup.select('div[data-lyrics-container="true"]')
 
     if not containers:
+        lyrics_logger.debug("NO_CONTAINER  url=%s", url)
         return ""
 
     parts: list[str] = []
@@ -261,7 +269,10 @@ async def _genius_scrape(session: aiohttp.ClientSession, url: str) -> str:
 
     lyrics = "\n".join(parts).strip()
     lyrics = re.sub(r"\n{3,}", "\n\n", lyrics)
+    raw_len = len(lyrics)
     lyrics = _clean_lyrics(lyrics)
+    if not lyrics:
+        lyrics_logger.debug("CLEAN_EMPTY   url=%s  raw_len=%d", url, raw_len)
     return lyrics
 
 
@@ -281,15 +292,23 @@ async def fetch_lyrics(
             async with semaphore:
                 song_url = await _genius_search(session, title, artist)
                 if song_url is None:
+                    lyrics_logger.debug("NOT_FOUND     artist=%r  title=%r", artist, title)
                     return ""
-                return await _genius_scrape(session, song_url)
+                lyrics = await _genius_scrape(session, song_url)
+                if lyrics:
+                    lyrics_logger.debug("OK (%d chars)  artist=%r  title=%r  url=%s", len(lyrics), artist, title, song_url)
+                else:
+                    lyrics_logger.debug("EMPTY         artist=%r  title=%r  url=%s", artist, title, song_url)
+                return lyrics
         except _RateLimited:
             wait = min(backoff_base * (2 ** attempt), max_backoff)
             await asyncio.sleep(wait)
             continue
         except Exception:
+            lyrics_logger.debug("EXCEPTION     artist=%r  title=%r  err=%s", artist, title, traceback.format_exc().strip().splitlines()[-1])
             return ""
 
+    lyrics_logger.debug("RATELIMITED   artist=%r  title=%r  (exhausted %d retries)", artist, title, max_retries)
     return ""
 
 
