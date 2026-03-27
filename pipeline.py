@@ -300,22 +300,22 @@ async def fetch_lyrics(
 # ffmpeg quality setting (-q:a 2).
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _to_mp3_bytes(audio_path: str) -> bytes | None:
-    """Convert audio to MP3 bytes.  MP3 files are read directly;
-    everything else goes through ffmpeg with -q:a 2 (matching existing code)."""
-    if audio_path.lower().endswith(".mp3"):
-        try:
-            with open(audio_path, "rb") as f:
-                return f.read()
-        except Exception as exc:
-            error_logger.error("MP3 read failed: %s — %s", audio_path, exc)
-            return None
+MAX_CAPTION_DURATION = 300   # seconds — first 5 min is plenty for captioning
+MAX_MP3_BYTES = 4_500_000   # ~4.5 MB — stay well under kie.ai nginx limit
 
+
+async def _to_mp3_bytes(audio_path: str) -> bytes | None:
+    """Convert audio to MP3 bytes, capped at MAX_CAPTION_DURATION seconds
+    and MAX_MP3_BYTES size to avoid 413 from kie.ai."""
+    # All files go through ffmpeg now (including .mp3) to enforce duration cap
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-i", audio_path,
+        "-t", str(MAX_CAPTION_DURATION),  # cap duration
         "-map", "0:a:0",          # audio stream only, drop album art
         "-map_metadata", "-1",    # strip all metadata/ID3 tags
-        "-q:a", "2", "-f", "mp3", "pipe:1",
+        "-ac", "1",               # mono — enough for captioning
+        "-b:a", "96k",            # constant 96kbps — predictable size
+        "-f", "mp3", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -325,6 +325,11 @@ async def _to_mp3_bytes(audio_path: str) -> bytes | None:
             "ffmpeg failed (rc=%d): %s — %s",
             proc.returncode, audio_path,
             stderr_bytes.decode("utf-8", errors="replace")[:500],
+        )
+        return None
+    if len(stdout) > MAX_MP3_BYTES:
+        error_logger.error(
+            "MP3 too large after conversion (%d bytes): %s", len(stdout), audio_path,
         )
         return None
     return stdout
