@@ -745,9 +745,11 @@ async def stage2_worker(
     session: aiohttp.ClientSession,
     genius_semaphore: asyncio.Semaphore,
     counters: Counters,
+    skip_lyrics: bool = False,
 ):
     """Lyrics worker: pulls items from queue_a, fetches lyrics via Genius,
-    pushes results into queue_b."""
+    pushes results into queue_b.  When skip_lyrics=True, passes items
+    straight through without contacting Genius."""
     while True:
         item = await queue_a.get()
         if item is None:
@@ -759,7 +761,7 @@ async def stage2_worker(
             lyrics = ""
             found_on_genius = False
             has_markup = False
-            if item["has_vocals"]:
+            if not skip_lyrics and item["has_vocals"]:
                 lyrics, found_on_genius, has_markup = await fetch_lyrics(
                     session, item["song_name"], item["artist"], genius_semaphore,
                 )
@@ -949,6 +951,7 @@ async def run_pipeline(args: argparse.Namespace):
     print(f"  Remaining to process:      {remaining:,}")
     print(f"  ─────────────────────────────────")
     print(f"  Download workers:          {args.download_workers}")
+    print(f"  Skip lyrics (Genius):      {args.skip_lyrics}")
     print(f"  Genius workers:            {args.genius_workers}")
     print(f"  Genius concurrency:        {args.genius_concurrency}")
     print(f"  Gemini workers:            {args.gemini_workers}")
@@ -1031,6 +1034,7 @@ async def run_pipeline(args: argparse.Namespace):
         lyrics_tasks = [
             asyncio.create_task(stage2_worker(
                 queue_a, queue_b, session, genius_semaphore, counters,
+                skip_lyrics=args.skip_lyrics,
             ))
             for _ in range(M)
         ]
@@ -1123,6 +1127,10 @@ def main():
     parser.add_argument(
         "--output", default="results.jsonl",
         help="Output JSONL file path (default: results.jsonl)",
+    )
+    parser.add_argument(
+        "--skip-lyrics", action="store_true", default=False,
+        help="Skip Genius lyrics fetching — only download + caption",
     )
     parser.add_argument(
         "--temp-dir", default="/tmp/music_processing",
